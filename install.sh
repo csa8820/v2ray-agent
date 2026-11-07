@@ -1774,8 +1774,10 @@ checkDNSIP() {
 }
 # 检查端口实际开放状态
 checkPortOpen() {
-    handleSingBox stop >/dev/null 2>&1
-    handleXray stop >/dev/null 2>&1
+    if ! handleSingBox stop transaction || ! handleXray stop transaction; then
+        echoContent red ' ---> 无法停止主核心，端口检测已取消，请检查对应服务状态'
+        return 1
+    fi
 
     local port=$1
     local domain=$2
@@ -3212,51 +3214,44 @@ handleHysteria() {
 
 # 操作sing-box
 handleSingBox() {
-    if [[ -f "/etc/systemd/system/sing-box.service" ]]; then
-        if [[ -z $(pgrep -f "sing-box") ]] && [[ "$1" == "start" ]]; then
-            if [[ "${3:-}" == staged ]]; then
-                singBoxMergeConfig preserve || return 1
-            else
-                singBoxMergeConfig || return 1
-            fi
-            systemctl start sing-box.service
-        elif [[ -n $(pgrep -f "sing-box") ]] && [[ "$1" == "stop" ]]; then
-            systemctl stop sing-box.service
+    local action=$1
+    case "${action}" in start|stop) ;; *) return 2 ;; esac
+    # The standalone SS service has a different binary and must not count as this core.
+    if ! socks5SingBoxService exists; then
+        if [[ "${action}" == stop ]] &&
+            ! pgrep -f '^/etc/v2ray-agent/sing-box/sing-box([[:space:]]|$)' >/dev/null 2>&1; then
+            return 0
         fi
-    elif [[ -f "/etc/init.d/sing-box" ]]; then
-        if [[ -z $(pgrep -f "sing-box") ]] && [[ "$1" == "start" ]]; then
-            if [[ "${3:-}" == staged ]]; then
-                singBoxMergeConfig preserve || return 1
-            else
-                singBoxMergeConfig || return 1
-            fi
-            rc-service sing-box start
-        elif [[ -n $(pgrep -f "sing-box") ]] && [[ "$1" == "stop" ]]; then
-            rc-service sing-box stop
-        fi
+        echoContent red ' ---> sing-box 主服务不存在，或仍有未托管的主核心进程'
+        return 1
     fi
-    sleep 1
 
-    if [[ "$1" == "start" ]]; then
-        if [[ -n $(pgrep -f "sing-box") ]]; then
-            echoContent green " ---> sing-box启动成功"
-        else
-            echoContent red "sing-box启动失败"
-            echoContent yellow "请手动执行【 /etc/v2ray-agent/sing-box/sing-box merge config.json -C /etc/v2ray-agent/sing-box/conf/config/ -D /etc/v2ray-agent/sing-box/conf/ 】，查看错误日志"
-            echo
-            echoContent yellow "如上面命令没有错误，请手动执行【 /etc/v2ray-agent/sing-box/sing-box run -c /etc/v2ray-agent/sing-box/conf/config.json 】，查看错误日志"
-            [[ "${2:-}" == "transaction" ]] && return 1
-            exit 0
+    if [[ "${action}" == start ]]; then
+        if ! socks5SingBoxService status; then
+            if [[ "${3:-}" == staged ]]; then
+                singBoxMergeConfig preserve || { echoContent red ' ---> sing-box 配置合并或校验失败'; return 1; }
+            else
+                singBoxMergeConfig || { echoContent red ' ---> sing-box 配置合并或校验失败'; return 1; }
+            fi
+            socks5SingBoxService start || { echoContent red ' ---> sing-box 主服务启动失败，请检查 sing-box 服务日志'; return 1; }
+            sleep 1
         fi
-    elif [[ "$1" == "stop" ]]; then
-        if [[ -z $(pgrep -f "sing-box") ]]; then
-            echoContent green " ---> sing-box关闭成功"
-        else
-            echoContent red " ---> sing-box关闭失败"
-            echoContent red "请手动执行【ps -ef|grep -v grep|grep sing-box|awk '{print \$2}'|xargs kill -9】"
-            [[ "${2:-}" == "transaction" ]] && return 1
-            exit 0
+        if ! socks5SingBoxService status; then
+            echoContent red ' ---> sing-box 主服务启动失败，请检查 sing-box 服务日志'
+            return 1
         fi
+        echoContent green ' ---> sing-box 主服务启动成功'
+    else
+        if socks5SingBoxService status; then
+            socks5SingBoxService stop || { echoContent red ' ---> sing-box 主服务停止失败，请检查 sing-box 服务状态'; return 1; }
+            sleep 1
+        fi
+        if socks5SingBoxService status ||
+            pgrep -f '^/etc/v2ray-agent/sing-box/sing-box([[:space:]]|$)' >/dev/null 2>&1; then
+            echoContent red ' ---> sing-box 主服务停止失败，请检查 sing-box 服务状态'
+            return 1
+        fi
+        echoContent green ' ---> sing-box 主服务停止成功'
     fi
 }
 

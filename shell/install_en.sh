@@ -1774,8 +1774,10 @@ checkDNSIP() {
 }
 # Check the actual open status of the port
 checkPortOpen() {
-    handleSingBox stop >/dev/null 2>&1
-    handleXray stop >/dev/null 2>&1
+    if ! handleSingBox stop transaction || ! handleXray stop transaction; then
+        echoContent red ' ---> Unable to stop the main core; port check cancelled, inspect the service status'
+        return 1
+    fi
 
     local port=$1
     local domain=$2
@@ -3190,51 +3192,44 @@ handleHysteria() {
 
 # 操作sing-box
 handleSingBox() {
-    if [[ -f "/etc/systemd/system/sing-box.service" ]]; then
-        if [[ -z $(pgrep -f "sing-box") ]] && [[ "$1" == "start" ]]; then
-            if [[ "${3:-}" == staged ]]; then
-                singBoxMergeConfig preserve || return 1
-            else
-                singBoxMergeConfig || return 1
-            fi
-            systemctl start sing-box.service
-        elif [[ -n $(pgrep -f "sing-box") ]] && [[ "$1" == "stop" ]]; then
-            systemctl stop sing-box.service
+    local action=$1
+    case "${action}" in start|stop) ;; *) return 2 ;; esac
+    # The standalone SS service has a different binary and must not count as this core.
+    if ! socks5SingBoxService exists; then
+        if [[ "${action}" == stop ]] &&
+            ! pgrep -f '^/etc/v2ray-agent/sing-box/sing-box([[:space:]]|$)' >/dev/null 2>&1; then
+            return 0
         fi
-    elif [[ -f "/etc/init.d/sing-box" ]]; then
-        if [[ -z $(pgrep -f "sing-box") ]] && [[ "$1" == "start" ]]; then
-            if [[ "${3:-}" == staged ]]; then
-                singBoxMergeConfig preserve || return 1
-            else
-                singBoxMergeConfig || return 1
-            fi
-            rc-service sing-box start
-        elif [[ -n $(pgrep -f "sing-box") ]] && [[ "$1" == "stop" ]]; then
-            rc-service sing-box stop
-        fi
+        echoContent red ' ---> Main sing-box service is missing, or its unmanaged process is still running'
+        return 1
     fi
-    sleep 1
 
-    if [[ "$1" == "start" ]]; then
-        if [[ -n $(pgrep -f "sing-box") ]]; then
-            echoContent green " ---> sing-box started successfully "
-        else
-            echoContent red "sing-box failed to start "
-            echoContent yellow " Run manually: [ /etc/v2ray-agent/sing-box/sing-box merge config.json -C /etc/v2ray-agent/sing-box/conf/config/ -D /etc/v2ray-agent/sing-box/conf/ ], Check the error logs "
-            echo
-            echoContent yellow " If the command above reports no errors , Run manually: [ /etc/v2ray-agent/sing-box/sing-box run -c /etc/v2ray-agent/sing-box/conf/config.json ], Check the error logs "
-            [[ "${2:-}" == "transaction" ]] && return 1
-            exit 0
+    if [[ "${action}" == start ]]; then
+        if ! socks5SingBoxService status; then
+            if [[ "${3:-}" == staged ]]; then
+                singBoxMergeConfig preserve || { echoContent red ' ---> sing-box configuration merge or validation failed'; return 1; }
+            else
+                singBoxMergeConfig || { echoContent red ' ---> sing-box configuration merge or validation failed'; return 1; }
+            fi
+            socks5SingBoxService start || { echoContent red ' ---> Main sing-box service failed to start; check its service logs'; return 1; }
+            sleep 1
         fi
-    elif [[ "$1" == "stop" ]]; then
-        if [[ -z $(pgrep -f "sing-box") ]]; then
-            echoContent green " ---> sing-box stopped successfully "
-        else
-            echoContent red " ---> sing-box failed to stop "
-            echoContent red " Run manually: [ps -ef|grep -v grep|grep sing-box|awk '{print \$2}'|xargs kill -9]"
-            [[ "${2:-}" == "transaction" ]] && return 1
-            exit 0
+        if ! socks5SingBoxService status; then
+            echoContent red ' ---> Main sing-box service failed to start; check its service logs'
+            return 1
         fi
+        echoContent green ' ---> Main sing-box service started successfully'
+    else
+        if socks5SingBoxService status; then
+            socks5SingBoxService stop || { echoContent red ' ---> Main sing-box service failed to stop; check its service status'; return 1; }
+            sleep 1
+        fi
+        if socks5SingBoxService status ||
+            pgrep -f '^/etc/v2ray-agent/sing-box/sing-box([[:space:]]|$)' >/dev/null 2>&1; then
+            echoContent red ' ---> Main sing-box service failed to stop; check its service status'
+            return 1
+        fi
+        echoContent green ' ---> Main sing-box service stopped successfully'
     fi
 }
 

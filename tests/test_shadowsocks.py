@@ -108,6 +108,122 @@ shadowsocksGenerateConfig {port} aes-256-gcm 'test-password' >"$SS_TEST_ROOT/can
 shadowsocksApply install "$SS_TEST_ROOT/candidate.json"
 ''')
 
+    def run_core_shell(self, command, success=True):
+        source = (REPO / self.script).read_text()
+        handler = source[source.index("handleSingBox() {"):source.index("\nhandleXray() {")]
+        adapter = source[source.index("socks5SingBoxService() {"):source.index("\nsocks5InboundFirewall() {")]
+        port_check = source[source.index("checkPortOpen() {"):source.index("\ninitTLSNginxConfig() {")]
+        functions = (handler + "\n" + adapter + "\n" + port_check + "\n").replace("/etc/v2ray-agent", str(self.root / "agent"))
+        functions = functions.replace("/etc/systemd/system/sing-box.service", str(self.root / "main-unit"))
+        functions = functions.replace("/etc/init.d/sing-box", str(self.root / "main-openrc"))
+        helpers = r'''
+release=debian
+nginxConfigPath="$SS_TEST_ROOT/nginx/"
+mkdir -p "$nginxConfigPath"
+echoContent() { printf '%s\n' "$2" >&2; }
+sleep() { :; }
+allowPort() { :; }
+handleXray() { return 0; }
+handleNginx() { printf '%s\n' "$1" >>"$SS_TEST_ROOT/nginx.log"; }
+checkIP() { return 0; }
+curl() {
+    case "$*" in
+    */checkPort) printf fjkvymb6len ;;
+    */ip) printf 192.0.2.1 ;;
+    esac
+}
+pgrep() {
+    # The SS process exists throughout every scenario.
+    if [[ "$2" == sing-box ]]; then printf '4242\n'; return 0; fi
+    if [[ -f "$SS_TEST_ROOT/main-active" ]]; then printf '123\n'; return 0; fi
+    return 1
+}
+singBoxMergeConfig() {
+    printf '%s\n' "$*" >>"$SS_TEST_ROOT/merge.log"
+    [[ ! -f "$SS_TEST_ROOT/fail-merge" ]]
+}
+systemctl() {
+    printf '%s\n' "$*" >>"$SS_TEST_ROOT/core-service.log"
+    case "$1" in
+    cat) [[ -f "$SS_TEST_ROOT/main-unit" ]] ;;
+    is-active) [[ -f "$SS_TEST_ROOT/main-active" ]] ;;
+    start)
+        [[ ! -f "$SS_TEST_ROOT/fail-start" ]] || return 1
+        touch "$SS_TEST_ROOT/main-active" ;;
+    stop)
+        [[ ! -f "$SS_TEST_ROOT/fail-stop" ]] || return 1
+        rm -f "$SS_TEST_ROOT/main-active" ;;
+    *) return 1 ;;
+    esac
+}
+rc-service() {
+    case "$2" in
+    status) systemctl is-active "$1" ;;
+    *) systemctl "$2" "$1" ;;
+    esac
+}
+'''
+        result = subprocess.run(
+            ["bash", "-c", functions + helpers + command],
+            env={**os.environ, "SS_TEST_ROOT": str(self.root)},
+            text=True, capture_output=True,
+        )
+        if success:
+            self.assertEqual(result.returncode, 0, result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+        return result
+
+    def test_ss_only_stop_continues_tls_installation(self):
+        result = self.run_core_shell('handleSingBox stop >/dev/null 2>&1; printf "TLS_CONTINUED"')
+        self.assertEqual(result.stdout, "TLS_CONTINUED")
+        self.assertFalse((self.root / "merge.log").exists())
+
+    def test_tls_port_check_continues_with_ss_only(self):
+        result = self.run_core_shell('checkPortOpen 443 example.com && printf "READY_FOR_TLS"')
+        self.assertEqual(result.stdout, "READY_FOR_TLS")
+        self.assertIn("start", (self.root / "nginx.log").read_text())
+        self.assertFalse((self.root / "nginx/checkPortOpen.conf").exists())
+
+    def test_tls_port_check_reports_stop_failure(self):
+        (self.root / "main-unit").touch()
+        (self.root / "main-active").touch()
+        (self.root / "fail-stop").touch()
+        result = self.run_core_shell("checkPortOpen 443 example.com", success=False)
+        self.assertTrue(result.stderr.strip())
+        self.assertFalse((self.root / "nginx.log").exists())
+
+    def test_main_core_starts_while_ss_is_running(self):
+        (self.root / "main-unit").touch()
+        self.run_core_shell("handleSingBox start transaction staged")
+        self.assertTrue((self.root / "main-active").exists())
+        self.assertEqual((self.root / "merge.log").read_text(), "preserve\n")
+
+    def test_stop_main_core_ignores_running_ss(self):
+        (self.root / "main-unit").touch()
+        (self.root / "main-active").touch()
+        result = self.run_core_shell('handleSingBox stop && printf "STOPPED"')
+        self.assertEqual(result.stdout, "STOPPED")
+        self.assertFalse((self.root / "main-active").exists())
+
+    def test_main_core_stop_failure_returns_failure(self):
+        (self.root / "main-unit").touch()
+        (self.root / "main-active").touch()
+        (self.root / "fail-stop").touch()
+        self.run_core_shell("handleSingBox stop", success=False)
+        self.assertTrue((self.root / "main-active").exists())
+
+    def test_main_core_start_failure_is_not_masked_by_ss(self):
+        (self.root / "main-unit").touch()
+        (self.root / "fail-start").touch()
+        self.run_core_shell("handleSingBox start", success=False)
+        self.assertFalse((self.root / "main-active").exists())
+
+    def test_openrc_main_core_coexists_with_ss(self):
+        (self.root / "main-openrc").touch()
+        self.run_core_shell("release=alpine; handleSingBox start && handleSingBox stop")
+        self.assertFalse((self.root / "main-active").exists())
+
     def test_supported_ciphers_and_quoted_password(self):
         for method in ("aes-128-gcm", "aes-256-gcm", "chacha20-ietf-poly1305"):
             result = self.run_shell(f"shadowsocksGenerateConfig 08388 {method} 'a\"b\\c'")
