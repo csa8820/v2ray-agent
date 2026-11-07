@@ -6932,6 +6932,9 @@ unInstall() {
         menu
         exit 0
     fi
+    if [[ -f /etc/v2ray-agent/shadowsocks/config.json ]]; then
+        shadowsocksApply remove || return 1
+    fi
     removeAllPortHopping || {
         echoContent red " ---> 端口跳跃清理失败，已停止卸载，请检查防火墙后重试"
         return 1
@@ -12801,6 +12804,218 @@ singBoxVersionManageMenu() {
 }
 
 # 主菜单
+# Standalone Shadowsocks uses its own binary, configuration and service.
+shadowsocksService() {
+    local action=$1
+    if [[ "${release}" == alpine ]]; then
+        case "${action}" in
+        active) rc-service v2ray-agent-ss status >/dev/null 2>&1 ;;
+        enabled) rc-update show default | awk '{print $1}' | grep -qx v2ray-agent-ss ;;
+        enable) rc-update add v2ray-agent-ss default ;;
+        disable) rc-update del v2ray-agent-ss default ;;
+        reload) return 0 ;;
+        pid) cat /var/run/v2ray-agent-ss.pid 2>/dev/null ;;
+        *) rc-service v2ray-agent-ss "${action}" ;;
+        esac
+    else
+        case "${action}" in
+        active) systemctl is-active --quiet v2ray-agent-ss.service ;;
+        enabled) systemctl is-enabled --quiet v2ray-agent-ss.service ;;
+        reload) systemctl daemon-reload ;;
+        pid) systemctl show -p MainPID --value v2ray-agent-ss.service ;;
+        *) systemctl "${action}" v2ray-agent-ss.service ;;
+        esac
+    fi
+}
+
+shadowsocksGenerateConfig() {
+    local port=$1 method=$2 password=$3
+    [[ "${port}" =~ ^[0-9]{1,5}$ ]] && ((10#${port} >= 1 && 10#${port} <= 65535)) || return 1
+    case "${method}" in
+    aes-128-gcm|aes-256-gcm|chacha20-ietf-poly1305) [[ -n "${password}" ]] || return 1 ;;
+    2022-blake3-aes-128-gcm|2022-blake3-aes-256-gcm)
+        local length=44
+        [[ "${method}" != 2022-blake3-aes-128-gcm ]] || length=24
+        [[ ${#password} == "${length}" && "${password}" =~ ^[A-Za-z0-9+/]+=*$ ]] || return 1
+        ;;
+    *) return 1 ;;
+    esac
+    jq -n --argjson port "$((10#${port}))" --arg method "${method}" --arg password "${password}" \
+        '{log:{level:"warn"},inbounds:[{type:"shadowsocks",tag:"ss-in",listen:"::",listen_port:$port,method:$method,password:$password}],outbounds:[{type:"direct",tag:"direct"}],route:{final:"direct"}}'
+}
+
+# Keep the previous config, binary, unit and activation state until start succeeds.
+shadowsocksApply() (
+    umask 077
+    local action=$1 candidate=${2:-} root=/etc/v2ray-agent/shadowsocks
+    local unit=/etc/systemd/system/v2ray-agent-ss.service work
+    local active=false enabled=false touched=false success=false rollbackFailed=false servicePID
+    [[ "${release}" != alpine ]] || unit=/etc/init.d/v2ray-agent-ss
+    mkdir -p "${root}" || return 1
+    mkdir "${root}/.lock" 2>/dev/null || { echoContent red '另一个 SS 操作正在运行'; return 1; }
+    work=$(mktemp -d "${root}/.change.XXXXXX") || { rmdir "${root}/.lock"; return 1; }
+    trap 'exit 1' HUP INT TERM
+    trap '
+        if [[ "${success}" != true && "${touched}" == true ]]; then
+            shadowsocksService stop >/dev/null 2>&1 || true
+            shadowsocksService disable >/dev/null 2>&1 || true
+            for file in config.json sing-box; do
+                if [[ -f "${work}/${file}" ]]; then cp -p "${work}/${file}" "${root}/${file}" || rollbackFailed=true
+                else rm -f "${root}/${file}" || rollbackFailed=true; fi
+            done
+            if [[ -f "${work}/unit" ]]; then cp -p "${work}/unit" "${unit}" || rollbackFailed=true
+            else rm -f "${unit}" || rollbackFailed=true; fi
+            shadowsocksService reload || rollbackFailed=true
+            if [[ "${enabled}" == true ]]; then shadowsocksService enable || rollbackFailed=true; fi
+            if [[ "${active}" == true ]]; then shadowsocksService start || rollbackFailed=true; fi
+        fi
+        rmdir "${root}/.lock"
+        if [[ "${rollbackFailed}" == true ]]; then echoContent red "SS 恢复失败，备份保留于 ${work}"
+        else rm -rf "${work}"; fi
+    ' EXIT
+    local file
+    for file in config.json sing-box; do
+        [[ ! -f "${root}/${file}" ]] || cp -p "${root}/${file}" "${work}/${file}" || return 1
+    done
+    [[ ! -f "${unit}" ]] || cp -p "${unit}" "${work}/unit" || return 1
+    shadowsocksService active && active=true
+    shadowsocksService enabled && enabled=true
+    if [[ "${action}" == install ]]; then
+        cp "${candidate}" "${work}/new-config.json" || return 1
+        # Reinstall reuses the dedicated core. Initial install reuses the core downloader.
+        if [[ -x "${root}/sing-box" ]]; then
+            cp -p "${root}/sing-box" "${work}/new-core" || return 1
+        else
+            prepareSingBoxCoreForSocks5 || return 1
+            cp /etc/v2ray-agent/sing-box/sing-box "${work}/new-core" || return 1
+        fi
+        chmod 755 "${work}/new-core" || return 1
+        "${work}/new-core" check -c "${work}/new-config.json" || return 1
+        local port oldPort pids
+        port=$(jq -er '.inbounds[0].listen_port' "${work}/new-config.json") || return 1
+        oldPort=$(jq -r '.inbounds[0].listen_port // empty' "${root}/config.json" 2>/dev/null)
+        if [[ "${active}" != true || "${port}" != "${oldPort}" ]]; then
+            pids=$(lsof -nP -t -iTCP:"${port}" -sTCP:LISTEN -iUDP:"${port}" 2>/dev/null)
+            [[ -z "${pids}" ]] || { echoContent red 'SS 端口已被占用'; return 1; }
+        fi
+    elif [[ "${action}" != remove ]]; then
+        return 1
+    fi
+    touched=true
+    if [[ -f "${unit}" ]]; then shadowsocksService stop || return 1; fi
+    if [[ "${action}" == remove ]]; then
+        if [[ -f "${unit}" ]]; then shadowsocksService disable || return 1; fi
+        rm -f "${unit}" "${root}/config.json" "${root}/sing-box" || return 1
+        shadowsocksService reload || return 1
+    else
+        mv "${work}/new-config.json" "${root}/config.json" && mv "${work}/new-core" "${root}/sing-box" || return 1
+        if [[ "${release}" == alpine ]]; then
+            cat >"${unit}" <<'SS_OPENRC'
+#!/sbin/openrc-run
+description="v2ray-agent Shadowsocks"
+command="/etc/v2ray-agent/shadowsocks/sing-box"
+command_args="run -c /etc/v2ray-agent/shadowsocks/config.json"
+command_background=true
+pidfile="/var/run/v2ray-agent-ss.pid"
+depend() { need net; }
+SS_OPENRC
+        else
+            cat >"${unit}" <<'SS_SYSTEMD'
+[Unit]
+Description=v2ray-agent Shadowsocks
+After=network-online.target
+Wants=network-online.target
+[Service]
+ExecStart=/etc/v2ray-agent/shadowsocks/sing-box run -c /etc/v2ray-agent/shadowsocks/config.json
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+[Install]
+WantedBy=multi-user.target
+SS_SYSTEMD
+        fi
+        [[ $? == 0 ]] || return 1
+        if [[ "${release}" == alpine ]]; then chmod 755 "${unit}" || return 1
+        else chmod 644 "${unit}" || return 1; fi
+        shadowsocksService reload && shadowsocksService start || return 1
+        local attempt
+        for ((attempt=0; attempt<10; attempt++)); do
+            servicePID=$(shadowsocksService pid 2>/dev/null)
+            if shadowsocksService active && [[ "${servicePID}" =~ ^[1-9][0-9]*$ ]] &&
+                lsof -nP -a -p "${servicePID}" -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1; then break; fi
+            sleep 1
+        done
+        ((attempt < 10)) || return 1
+        shadowsocksService enable || return 1
+    fi
+    success=true
+)
+
+shadowsocksShow() {
+    local config=/etc/v2ray-agent/shadowsocks/config.json server=$1
+    [[ -f "${config}" ]] || { echoContent red '尚未安装 SS'; return 1; }
+    [[ -n "${server}" ]] || server=$(getPublicIP)
+    [[ -n "${server}" ]] || { echoContent red '无法获取公网 IP'; return 1; }
+    local method password port encoded endpoint
+    method=$(jq -er '.inbounds[0].method' "${config}") || return 1
+    password=$(jq -er '.inbounds[0].password' "${config}") || return 1
+    port=$(jq -er '.inbounds[0].listen_port' "${config}") || return 1
+    encoded=$(printf '%s' "${method}:${password}" | base64 | tr -d '\r\n' | tr '+/' '-_' | tr -d '=') || return 1
+    if [[ "${method}" == 2022-* ]]; then
+        encoded="${method}:$(jq -rn --arg password "${password}" '$password|@uri')" || return 1
+    fi
+    endpoint=${server}
+    [[ "${endpoint}" != *:* ]] || endpoint="[${endpoint}]"
+    printf '\nss://%s@%s:%s#Shadowsocks\n\n' "${encoded}" "${endpoint}" "${port}"
+    jq -n --arg server "${server}" --argjson port "${port}" --arg cipher "${method}" --arg password "${password}" \
+        '{name:"Shadowsocks",type:"ss",server:$server,port:$port,cipher:$cipher,password:$password,udp:true}'
+}
+
+shadowsocksInstall() (
+    umask 077
+    local port choice method password config bytes=32
+    read -r -p '端口 [默认 8388]: ' port || return 1
+    port=${port:-8388}
+    echoContent yellow '1. aes-256-gcm  2. chacha20-ietf-poly1305  3. SS2022 AES-128  4. SS2022 AES-256'
+    read -r -p '加密方式 [默认 1]: ' choice || return 1
+    case "${choice}" in
+    ''|1) method=aes-256-gcm ;;
+    2) method=chacha20-ietf-poly1305 ;;
+    3) method=2022-blake3-aes-128-gcm; bytes=16 ;;
+    4) method=2022-blake3-aes-256-gcm ;;
+    *) return 1 ;;
+    esac
+    read -r -s -p '密码/密钥 [留空自动生成]: ' password || return 1
+    printf '\n'
+    if [[ -z "${password}" ]]; then
+        password=$(head -c "${bytes}" /dev/urandom | base64 | tr -d '\r\n') || return 1
+    fi
+    config=$(mktemp) || return 1
+    trap 'rm -f "${config}"' EXIT
+    shadowsocksGenerateConfig "${port}" "${method}" "${password}" >"${config}" || { echoContent red 'SS 端口、加密方式或密钥无效'; return 1; }
+    installSocks5InboundTools || return 1
+    shadowsocksApply install "${config}" || return 1
+    echoContent green "SS 安装成功，请在主机防火墙和云安全组放行 $((10#${port})) 端口的 TCP、UDP。"
+    shadowsocksShow
+)
+
+shadowsocksMenu() {
+    local choice
+    echoContent skyBlue 'Shadowsocks / SS2022'
+    echoContent yellow '1.安装 / 修改配置'
+    echoContent yellow '2.查看 ss:// 链接和 Clash 节点'
+    echoContent yellow '3.重启'
+    echoContent yellow '4.卸载 SS'
+    read -r -p '请选择: ' choice || return 1
+    case "${choice}" in
+    1) shadowsocksInstall ;;
+    2) shadowsocksShow ;;
+    3) shadowsocksService restart ;;
+    4) installSocks5InboundTools && shadowsocksApply remove ;;
+    esac
+}
+
+
 menu() {
     cd "$HOME" || exit
     echoContent red "\n=============================================================="
@@ -12846,6 +13061,7 @@ menu() {
     echoContent yellow "16.core管理"
     echoContent yellow "17.更新脚本"
     echoContent yellow "18.安装BBR、DD脚本"
+    echoContent yellow "19.Shadowsocks / SS2022 安装与管理"
     echoContent skyBlue "-------------------------脚本管理-----------------------------"
     echoContent yellow "20.卸载脚本"
     echoContent red "=============================================================="
@@ -12906,6 +13122,9 @@ menu() {
         ;;
     18)
         bbrInstall
+        ;;
+    19)
+        shadowsocksMenu
         ;;
     20)
         unInstall 1

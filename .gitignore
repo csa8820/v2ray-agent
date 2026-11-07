@@ -10,7 +10,8 @@ AGENTS.md
 docs
 .playwright-mcp
 .sisyphus
-tests
+tests/*
+!tests/test_shadowsocks.py
 test
 checks
 /.superpowers/

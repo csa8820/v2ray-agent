@@ -14,7 +14,7 @@
 ## 功能
 
 *   **多核心支持:** 支持 Xray-core 和 sing-box，可按需安装单核心或组合使用.
-*   **多协议支持:** 支持 VLESS（TLS、Reality、XHTTP）、VMess、Trojan、Hysteria2、Tuic、NaiveProxy、AnyTLS，以及独立 SOCKS5 入站.
+*   **多协议支持:** 支持 VLESS（TLS、Reality、XHTTP）、VMess、Trojan、Hysteria2、Tuic、NaiveProxy、AnyTLS，以及独立 SOCKS5、Shadowsocks / SS2022 入站.
 *   **TLS 与 Reality:** TLS 协议可通过 acme.sh 自动申请和续订证书；Reality 支持无域名部署.
 *   **易于管理:** 提供菜单管理用户、端口、配置、核心版本、日志和证书，并支持二维码及客户端节点信息输出.
 *   **订阅支持:** 生成和管理订阅链接，支持远程订阅配置.
@@ -27,6 +27,22 @@
 
 *   **脚本版:** Linux、root 权限，支持 CentOS、Debian、Ubuntu 和 Alpine；支持 amd64/x86_64、arm64/aarch64.
 *   **Docker Reality:** Linux、root 或 sudo 权限，以及正在运行的 Docker；脚本可在交互模式下提示安装 Docker.
+
+## 安装 Shadowsocks / SS2022
+
+使用本修改版脚本，在 Linux 服务器以 root 身份运行 `bash install.sh`，选择主菜单 `19.Shadowsocks / SS2022 安装与管理`，再选择安装。英文入口为 `bash shell/install_en.sh`。
+
+输入监听端口、加密方式和密码。端口默认 `8388`，密码留空会自动生成。可选加密方式包括 `aes-256-gcm`、`chacha20-ietf-poly1305`、`2022-blake3-aes-128-gcm` 和 `2022-blake3-aes-256-gcm`。SS2022 自定义密钥须为对应的 16 或 32 字节 Base64 编码，安装前会使用核心校验配置。
+
+安装成功后会显示 `ss://` 链接和可放入 Clash / Mihomo `proxies` 列表的 JSON 节点对象。请在主机防火墙和云安全组放行所选端口的 TCP、UDP。服务监听 `::`，IPv4 可达性取决于系统的 IPv6 双栈设置。
+
+菜单同时提供查看节点、重启和卸载 SS。配置保存在 `/etc/v2ray-agent/shadowsocks/config.json`，独立核心保存在同目录，服务名为 `v2ray-agent-ss`，支持 systemd 和 Alpine OpenRC。首次安装复用已有 sing-box 核心或项目的下载逻辑，后续重装复用独立核心。项目的核心升级菜单管理原有核心，SS 独立核心版本需自行维护。
+
+SS 节点通过本菜单单独导出，项目的通用订阅与用户管理菜单暂未接入 SS。安装流程在发布前检查配置和端口，启动失败会恢复之前的配置、核心、服务定义及启用状态。主菜单的整体卸载会一并移除 SS。
+
+此功能为本地修改。主菜单的更新脚本功能会从上游下载脚本，使用前请保留本修改版，避免更新后丢失 SS 菜单。
+
+验证修改可运行 `bash -n install.sh`、`bash -n shell/install_en.sh` 和 `python3 -m unittest discover -s tests -v`，测试依赖 Bash、Python 3 和 jq。
 
 ## 快速开始
 
