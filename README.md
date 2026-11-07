@@ -1,5 +1,7 @@
 # v2ray-agent
 
+本仓库是 [csa8820/v2ray-agent](https://github.com/csa8820/v2ray-agent)，基于 [mack-a/v2ray-agent](https://github.com/mack-a/v2ray-agent) 扩展，增加独立 SS / SS2022 安装与管理。安装、脚本更新及项目资源下载均使用本仓库的 `master` 分支。
+
 - [感谢 JetBrains 提供的非商业开源软件开发授权](https://www.jetbrains.com/?from=v2ray-agent)
 
 
@@ -40,7 +42,7 @@
 
 SS 节点通过本菜单单独导出，项目的通用订阅与用户管理菜单暂未接入 SS。安装流程在发布前检查配置和端口，启动失败会恢复之前的配置、核心、服务定义及启用状态。主菜单的整体卸载会一并移除 SS。
 
-此功能为本地修改。主菜单的更新脚本功能会从上游下载脚本，使用前请保留本修改版，避免更新后丢失 SS 菜单。
+主菜单 `17.更新脚本` 从 `csa8820/v2ray-agent` 的 `master` 分支获取本修改版。已有上游安装的用户，请先按下方安装命令运行本仓库的脚本，再选择 `19` → `1` 安装 SS。
 
 验证修改可运行 `bash -n install.sh`、`bash -n shell/install_en.sh` 和 `python3 -m unittest discover -s tests -v`，测试依赖 Bash、Python 3 和 jq。
 
@@ -49,10 +51,12 @@ SS 节点通过本菜单单独导出，项目的通用订阅与用户管理菜�
 ### 安装脚本版
 
 ```
-wget -P /root -N --no-check-certificate "https://raw.githubusercontent.com/mack-a/v2ray-agent/master/install.sh" && chmod 700 /root/install.sh && /root/install.sh
+curl -fL -o /root/install.sh https://raw.githubusercontent.com/csa8820/v2ray-agent/master/install.sh && chmod 700 /root/install.sh && bash /root/install.sh
 ```
 
 ### 使用
+
+运行脚本后，选择 `19.Shadowsocks / SS2022 安装与管理` → `1.安装 / 修改配置`，按提示填写端口、加密方式和密码。安装成功后，复制输出的 `ss://` 链接导入客户端。
 
 安装后，运行以下命令可再次打开管理菜单:
 
@@ -62,7 +66,7 @@ vasma
 
 ### 安装Docker版
 ```
-wget -P /root -N --no-check-certificate "https://raw.githubusercontent.com/mack-a/v2ray-agent/master/shell/docker_reality.sh" && chmod 700 /root/docker_reality.sh && /root/docker_reality.sh
+wget -P /root -N --no-check-certificate "https://raw.githubusercontent.com/csa8820/v2ray-agent/master/shell/docker_reality.sh" && chmod 700 /root/docker_reality.sh && /root/docker_reality.sh
 ```
 
 ### 使用 
@@ -93,7 +97,7 @@ vasmad
 
 *   **Telegram:** [频道](https://t.me/v2rayAgentChannel) | [群组](https://t.me/technologyshare)
 *   **网站:** [官网](https://www.v2ray-agent.com/) | [备用](https://www.592083.xyz/)
-*   **反馈:** [提交 issue](https://github.com/mack-a/v2ray-agent/issues)
+*   **反馈:** [提交 issue](https://github.com/csa8820/v2ray-agent/issues)
 *   **X:** [链接](https://x.com/v2rayagent)
 
 ## 捐赠

@@ -1,5 +1,7 @@
 # v2ray-agent
 
+This fork is [csa8820/v2ray-agent](https://github.com/csa8820/v2ray-agent), based on [mack-a/v2ray-agent](https://github.com/mack-a/v2ray-agent), with standalone Shadowsocks / SS2022 installation and management. Script updates and project assets use this fork’s `master` branch.
+
 - [Thanks to JetBrains for providing non-commercial open source software development authorization](https://www.jetbrains.com/?from=v2ray-agent)
 
 
@@ -33,8 +35,14 @@ An installation and management script for Xray-core and sing-box, with regular h
 ### Installation
 
 ```
-wget -P /root -N --no-check-certificate "https://raw.githubusercontent.com/mack-a/v2ray-agent/master/install.sh" && chmod 700 /root/install.sh && /root/install.sh
+curl -fL -o /root/install.sh https://raw.githubusercontent.com/csa8820/v2ray-agent/master/shell/install_en.sh && chmod 700 /root/install.sh && bash /root/install.sh
 ```
+
+### Shadowsocks / SS2022
+
+As root on Linux, run the installation command above, then select main menu `19` and option `1`. Choose a port, cipher and password. An empty password generates a random credential. The result includes an `ss://` link and a Clash / Mihomo node object. Allow the selected TCP and UDP port in the host firewall and cloud security group.
+
+Menu `19` also shows credentials, restarts SS and uninstalls SS. Configuration lives in `/etc/v2ray-agent/shadowsocks/config.json`; the independent service is `v2ray-agent-ss`. SS nodes are exported separately from the general subscription and user management menus. Main menu `17` updates the script from this fork.
 
 ### Usage
 
@@ -47,7 +55,7 @@ vasma
 ### Docker Reality
 
 ```
-wget -P /root -N --no-check-certificate "https://raw.githubusercontent.com/mack-a/v2ray-agent/master/shell/docker_reality_en.sh" && chmod 700 /root/docker_reality_en.sh && /root/docker_reality_en.sh
+wget -P /root -N --no-check-certificate "https://raw.githubusercontent.com/csa8820/v2ray-agent/master/shell/docker_reality_en.sh" && chmod 700 /root/docker_reality_en.sh && /root/docker_reality_en.sh
 ```
 
 The Docker launcher supports Reality Vision, Reality XHTTP, or both modes. After installation, run `vasmad` to reopen its menu. See the [Docker Reality guide](https://www.v2ray-agent.com/archives/019e1b57-92b3-70ab-8919-cdf8c0bb4fe9).
@@ -68,7 +76,7 @@ The Docker launcher supports Reality Vision, Reality XHTTP, or both modes. After
 
 *   **Telegram:** [Channel](https://t.me/v2rayAgentChannel) | [Group](https://t.me/technologyshare)
 *   **Website:** [Official](https://www.v2ray-agent.com/) | [Backup](https://www.592083.xyz/)
-*   **Feedback:** [Submit an issue](https://github.com/mack-a/v2ray-agent/issues)
+*   **Feedback:** [Submit an issue](https://github.com/csa8820/v2ray-agent/issues)
 *   **X:** [Link](https://x.com/v2rayagent)
 
 ## Donation
