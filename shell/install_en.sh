@@ -3132,6 +3132,8 @@ EOF
 # Xray starts automatically after booting
 installXrayService() {
     echoContent skyBlue "\nProgress$1/${totalProgress}: Configure Xray to start automatically at boot"
+    # Stop the previous unit even when it runs an Xray installed at another path.
+    removeCoreService xray || return 1
     execStart='/etc/v2ray-agent/xray/xray run -confdir /etc/v2ray-agent/xray/conf'
     if [[ -n $(find /bin /usr/bin -name "systemctl") ]]; then
         rm -rf /etc/systemd/system/xray.service
@@ -3151,11 +3153,11 @@ LimitNOFILE=infinity
 [Install]
 WantedBy=multi-user.target
 EOF
-        bootStartup "xray.service"
+        bootStartup "xray.service" || return 1
         echoContent green " ---> Configure Xray to start automatically at boot"
     elif [[ "${release}" == "alpine" ]]; then
-        installAlpineStartup "xray"
-        bootStartup "xray"
+        installAlpineStartup "xray" || return 1
+        bootStartup "xray" || return 1
     fi
 }
 
@@ -3234,45 +3236,61 @@ handleSingBox() {
 }
 
 # Manipulate xray
+# Address the managed service instead of matching an executable substring.
+xrayService() {
+    local action=$1
+    if [[ "${release}" == alpine ]]; then
+        case "${action}" in
+        exists) [[ -f /etc/init.d/xray ]] ;;
+        status) rc-service xray status >/dev/null 2>&1 ;;
+        *) rc-service xray "${action}" ;;
+        esac
+    else
+        case "${action}" in
+        exists) [[ -f /etc/systemd/system/xray.service ]] || systemctl cat xray.service >/dev/null 2>&1 ;;
+        status) systemctl is-active --quiet xray.service ;;
+        *) systemctl "${action}" xray.service ;;
+        esac
+    fi
+}
+
 handleXray() {
-    # SOCKS5 transactions already validated and published Xray fragments.
-    if [[ "$1" == start && "${3:-}" != staged ]]; then
+    local action=$1
+    case "${action}" in start|stop) ;; *) return 2 ;; esac
+    if [[ "${action}" == start && "${3:-}" != staged ]]; then
         socks5OutboundRefreshXray || return 1
     fi
-    if [[ -n $(find /bin /usr/bin -name "systemctl") ]] && [[ -n $(find /etc/systemd/system/ -name "xray.service") ]]; then
-        if [[ -z $(pgrep -f "xray/xray") ]] && [[ "$1" == "start" ]]; then
-            systemctl start xray.service
-        elif [[ -n $(pgrep -f "xray/xray") ]] && [[ "$1" == "stop" ]]; then
-            systemctl stop xray.service
+    if ! xrayService exists; then
+        if [[ "${action}" == stop ]] &&
+            ! pgrep -f '^/etc/v2ray-agent/xray/xray([[:space:]]|$)' >/dev/null 2>&1; then
+            return 0
         fi
-    elif [[ -f "/etc/init.d/xray" ]]; then
-        if [[ -z $(pgrep -f "xray/xray") ]] && [[ "$1" == "start" ]]; then
-            rc-service xray start
-        elif [[ -n $(pgrep -f "xray/xray") ]] && [[ "$1" == "stop" ]]; then
-            rc-service xray stop
-        fi
+        echoContent red ' ---> Xray service is missing, or its unmanaged process is still running'
+        return 1
     fi
-
-    sleep 0.8
-
-    if [[ "$1" == "start" ]]; then
-        if [[ -n $(pgrep -f "xray/xray") ]]; then
-            echoContent green " ---> Xray started successfully"
-        else
-            echoContent red "Xray startup failed"
-            echoContent red "Please manually execute the following command [/etc/v2ray-agent/xray/xray -confdir /etc/v2ray-agent/xray/conf] and feedback the error log"
-            [[ "${2:-}" == "transaction" ]] && return 1
-            exit 0
+    if [[ "${action}" == start ]]; then
+        if ! xrayService status; then
+            xrayService start || { echoContent red ' ---> Xray failed to start; check the errors above and the service logs'; return 1; }
+            sleep 0.8
         fi
-    elif [[ "$1" == "stop" ]]; then
-        if [[ -z $(pgrep -f "xray/xray") ]]; then
-            echoContent green " ---> Xray closed successfully"
-        else
-            echoContent red "xray failed to close"
-            echoContent red "Please execute manually [ps -ef|grep -v grep|grep xray|awk '{print \$2}'|xargs kill -9]"
-            [[ "${2:-}" == "transaction" ]] && return 1
-            exit 0
+        if ! xrayService status; then
+            echoContent red ' ---> Xray failed to start; check the errors above and the service logs'
+            echoContent yellow '/etc/v2ray-agent/xray/xray run -test -confdir /etc/v2ray-agent/xray/conf'
+            echoContent yellow 'journalctl -u xray.service -n 50 --no-pager'
+            return 1
         fi
+        echoContent green ' ---> Xray started successfully'
+    else
+        if xrayService status; then
+            xrayService stop || { echoContent red ' ---> Xray failed to stop; check the service status'; return 1; }
+            sleep 0.8
+        fi
+        if xrayService status ||
+            pgrep -f '^/etc/v2ray-agent/xray/xray([[:space:]]|$)' >/dev/null 2>&1; then
+            echoContent red ' ---> Xray failed to stop; check the service status'
+            return 1
+        fi
+        echoContent green ' ---> Xray stopped successfully'
     fi
 }
 

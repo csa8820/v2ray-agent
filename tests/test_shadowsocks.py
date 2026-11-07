@@ -337,6 +337,104 @@ shadowsocksApply install "$SS_TEST_ROOT/candidate.json"
         self.assertIn("%3D%3D@example.com:8388", result.stdout)
 
 
+class XrayLifecycleTests(unittest.TestCase):
+    script = "install.sh"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / "systemd").mkdir()
+        (self.root / "init.d").mkdir()
+        self.unit = self.root / "systemd/xray.service"
+        self.unit.write_text("old service definition")
+        source = (REPO / self.script).read_text()
+        functions = []
+        for name in ("xrayService", "handleXray", "removeCoreService", "installXrayService", "bootStartup"):
+            start = source.index(name + "() {")
+            end = source.index("\n}\n", start) + 3
+            functions.append(source[start:end])
+        self.functions = "\n".join(functions) + "\n"
+        self.functions = self.functions.replace("/etc/systemd/system/", str(self.root / "systemd") + "/")
+        self.functions = self.functions.replace("/etc/init.d/", str(self.root / "init.d") + "/")
+        self.helpers = r'''
+release=debian
+echoContent() { printf '%s\n' "$2" >&2; }
+sleep() { :; }
+# Simulate an old /usr/local/bin/xray process that does not match xray/xray.
+pgrep() { return 1; }
+find() { printf '/usr/bin/systemctl\n'; }
+socks5OutboundRefreshXray() { touch "$SS_TEST_ROOT/refreshed"; }
+systemctl() {
+    printf '%s\n' "$*" >>"$SS_TEST_ROOT/calls"
+    case "$1" in
+    show) if [[ -f "$SS_TEST_ROOT/systemd/xray.service" ]]; then printf loaded; else printf not-found; fi ;;
+    cat) [[ -f "$SS_TEST_ROOT/systemd/xray.service" ]] ;;
+    is-active) [[ -f "$SS_TEST_ROOT/active" ]] ;;
+    start)
+        [[ ! -f "$SS_TEST_ROOT/fail-start" ]] || return 1
+        if [[ ! -f "$SS_TEST_ROOT/active" ]]; then touch "$SS_TEST_ROOT/new-process"; fi
+        touch "$SS_TEST_ROOT/active" ;;
+    stop)
+        [[ ! -f "$SS_TEST_ROOT/fail-stop" ]] || return 1
+        rm -f "$SS_TEST_ROOT/active" ;;
+    enable|disable|daemon-reload) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+'''
+
+    def run_shell(self, command, success=True):
+        result = subprocess.run(
+            ["bash", "-c", self.functions + self.helpers + command],
+            env={**os.environ, "SS_TEST_ROOT": str(self.root)},
+            text=True, capture_output=True,
+        )
+        if success:
+            self.assertEqual(result.returncode, 0, result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+        return result
+
+    def test_stop_targets_old_process_by_service(self):
+        (self.root / "active").touch()
+        result = self.run_shell('handleXray stop && printf "STOPPED"')
+        self.assertEqual(result.stdout, "STOPPED")
+        self.assertFalse((self.root / "active").exists())
+        self.assertIn("stop xray.service", (self.root / "calls").read_text())
+
+    def test_active_service_does_not_report_false_start_failure(self):
+        (self.root / "active").touch()
+        self.run_shell("handleXray start transaction staged")
+        self.assertNotIn("start xray.service", (self.root / "calls").read_text())
+        self.assertFalse((self.root / "refreshed").exists())
+
+    def test_replace_old_unit_stops_process_before_next_start(self):
+        (self.root / "active").touch()
+        self.run_shell("installXrayService 8 && handleXray start")
+        self.assertTrue((self.root / "new-process").exists())
+        self.assertTrue((self.root / "active").exists())
+        calls = (self.root / "calls").read_text()
+        self.assertLess(calls.index("stop xray.service"), calls.index("daemon-reload"))
+        self.assertLess(calls.index("daemon-reload"), calls.index("start xray.service"))
+        self.assertIn("/etc/v2ray-agent/xray/xray run -confdir /etc/v2ray-agent/xray/conf", self.unit.read_text())
+
+    def test_stop_failure_preserves_previous_unit(self):
+        (self.root / "active").touch()
+        (self.root / "fail-stop").touch()
+        self.run_shell("installXrayService 8", success=False)
+        self.assertEqual(self.unit.read_text(), "old service definition")
+        self.assertTrue((self.root / "active").exists())
+
+    def test_failed_start_returns_nonzero(self):
+        (self.root / "fail-start").touch()
+        self.run_shell("handleXray start", success=False)
+
+
+class EnglishXrayLifecycleTests(XrayLifecycleTests):
+    script = "shell/install_en.sh"
+
+
 class EnglishShadowsocksTests(ShadowsocksTests):
     script = "shell/install_en.sh"
 
