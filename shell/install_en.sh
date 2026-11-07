@@ -12868,18 +12868,23 @@ shadowsocksApply() (
         [[ ! -f "${root}/${file}" ]] || cp -p "${root}/${file}" "${work}/${file}" || return 1
     done
     [[ ! -f "${unit}" ]] || cp -p "${unit}" "${work}/unit" || return 1
-    shadowsocksService active && active=true
-    shadowsocksService enabled && enabled=true
+    # On first install there is no unit to query yet.
+    if [[ -f "${unit}" ]]; then
+        if shadowsocksService active; then active=true; fi
+        if shadowsocksService enabled; then enabled=true; fi
+    fi
     if [[ "${action}" == install ]]; then
         cp "${candidate}" "${work}/new-config.json" || return 1
         # Reinstall reuses the dedicated core. Initial install reuses the core downloader.
         if [[ -x "${root}/sing-box" ]]; then
             cp -p "${root}/sing-box" "${work}/new-core" || return 1
         else
-            prepareSingBoxCoreForSocks5 || return 1
+            echoContent skyBlue ' ---> Preparing sing-box; the first installation may need a download, please wait'
+            prepareSingBoxCoreForSocks5 || { echoContent red ' ---> Unable to prepare sing-box; check the errors above and connectivity to GitHub'; return 1; }
             cp /etc/v2ray-agent/sing-box/sing-box "${work}/new-core" || return 1
         fi
         chmod 755 "${work}/new-core" || return 1
+        echoContent skyBlue ' ---> Checking the SS configuration'
         "${work}/new-core" check -c "${work}/new-config.json" || return 1
         local port oldPort pids
         port=$(jq -er '.inbounds[0].listen_port' "${work}/new-config.json") || return 1
@@ -12927,7 +12932,13 @@ SS_SYSTEMD
         [[ $? == 0 ]] || return 1
         if [[ "${release}" == alpine ]]; then chmod 755 "${unit}" || return 1
         else chmod 644 "${unit}" || return 1; fi
-        shadowsocksService reload && shadowsocksService start || return 1
+        echoContent skyBlue ' ---> Registering and starting the SS service'
+        shadowsocksService reload && shadowsocksService start || {
+            echoContent red ' ---> SS service start failed'
+            if [[ "${release}" == alpine ]]; then echoContent yellow 'rc-service v2ray-agent-ss status'
+            else echoContent yellow 'journalctl -u v2ray-agent-ss -n 50 --no-pager'; fi
+            return 1
+        }
         local attempt
         for ((attempt=0; attempt<10; attempt++)); do
             servicePID=$(shadowsocksService pid 2>/dev/null)
@@ -12984,7 +12995,7 @@ shadowsocksInstall() (
     trap 'rm -f "${config}"' EXIT
     shadowsocksGenerateConfig "${port}" "${method}" "${password}" >"${config}" || { echoContent red 'Invalid SS port, cipher or key'; return 1; }
     installSocks5InboundTools || return 1
-    shadowsocksApply install "${config}" || return 1
+    shadowsocksApply install "${config}" || { echoContent red ' ---> SS installation failed; check the errors above'; return 1; }
     echoContent green "SS installed. Allow TCP and UDP port $((10#${port})) in the host firewall and cloud security group."
     shadowsocksShow
 )

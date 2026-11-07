@@ -59,9 +59,29 @@ lsof() {
 }
 '''
 
-    def run_shell(self, command, success=True):
+    def run_shell(self, command, success=True, real_service_adapter=False):
+        helpers = self.helpers
+        if real_service_adapter:
+            helpers = helpers.replace("shadowsocksService() {", "mockShadowsocksService() {")
+            helpers += r'''
+systemctl() {
+    printf '%s\n' "$*" >>"$SS_TEST_ROOT/systemctl.log"
+    case "$1" in
+    is-enabled)
+        if [[ ! -f "$SS_TEST_ROOT/ss.service" ]]; then
+            printf 'Failed to get unit file state: No such file or directory\n' >&2
+            return 1
+        fi
+        mockShadowsocksService enabled ;;
+    is-active) mockShadowsocksService active ;;
+    daemon-reload) return 0 ;;
+    show) mockShadowsocksService pid ;;
+    *) mockShadowsocksService "$1" ;;
+    esac
+}
+'''
         result = subprocess.run(
-            ["bash", "-c", self.functions + self.helpers + command],
+            ["bash", "-c", self.functions + helpers + command],
             env={**os.environ, "SS_TEST_ROOT": str(self.root)},
             text=True, capture_output=True,
         )
@@ -70,6 +90,17 @@ lsof() {
         else:
             self.assertNotEqual(result.returncode, 0, result.stdout)
         return result
+
+    def test_first_install_does_not_query_missing_systemd_unit(self):
+        result = self.run_shell('''
+shadowsocksGenerateConfig 8388 aes-256-gcm pass >"$SS_TEST_ROOT/candidate.json" &&
+shadowsocksApply install "$SS_TEST_ROOT/candidate.json"
+''', real_service_adapter=True)
+        self.assertNotIn("Failed to get unit file state", result.stderr)
+        calls = (self.root / "systemctl.log").read_text()
+        self.assertNotIn("is-enabled", calls)
+        self.assertIn("start v2ray-agent-ss.service", calls)
+        self.assertIn("enable v2ray-agent-ss.service", calls)
 
     def install(self, port=8388):
         return self.run_shell(f'''
